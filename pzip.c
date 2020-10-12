@@ -74,7 +74,7 @@ void* compressor_thread(void* arg) {
     char new_char;
 
     if (args->worker_id != 0) { // do the scan-forward thing
-      printf("Scanning forward to the end of the block\n");
+      // printf("Scanning forward to the end of the block\n");
       for (new_char = fgetc(fp); new_char == curr_char; new_char = fgetc(fp));
       curr_char = new_char;
     }
@@ -85,9 +85,9 @@ void* compressor_thread(void* arg) {
 
     uint32_t curr_char_count;
 
-    printf("beginning compresson loop\n");
-    while ((curr_char == EOF)) {
-        // ((args->worker_id != args->num_jobs-1) && (ftell(fp) > args->work_orders_for_file[args->worker_id+1])) || 
+    // printf("beginning compresson loop\n");
+    while ((curr_char != EOF)) {
+        // ((args->worker_id != args->num_jobs-1) && (ftell(fp) > args->work_orders_for_file[args->worker_id+1])) ||
         // stop compression loop if:
         // if we are the last worker
             // we hit an EOF
@@ -100,12 +100,15 @@ void* compressor_thread(void* arg) {
             buffer_size = buffer_size * 2;
             buffer = (char*) realloc(buffer, buffer_size);
         }
+
         buffer[num_entries*5]   = ((char*) &curr_char_count)[0];
         buffer[num_entries*5+1] = ((char*) &curr_char_count)[1];
         buffer[num_entries*5+2] = ((char*) &curr_char_count)[2];
         buffer[num_entries*5+3] = ((char*) &curr_char_count)[3];
+        
         buffer[num_entries*5+4] = curr_char;
         num_entries += 1;
+        curr_char = new_char;
     }
     fclose(fp);
 
@@ -138,7 +141,7 @@ int main(int argc, char** argv) {
     } else {
         nthreads_l = atoi(nthreads_s);
     }
-    printf("NTHREADS: %ld\n", nthreads_l);
+    // printf("NTHREADS: %ld\n", nthreads_l);
 
     sem_t available_threads;
     sem_init(&available_threads, 0, (unsigned int) nthreads_l);
@@ -161,7 +164,7 @@ int main(int argc, char** argv) {
           all_thread_args[(j-1) * nthreads_l + i].completion_indicator = &available_threads;
         }
     }
-    printf("initialized args\n");
+    // printf("initialized args\n");
     pthread_t* threads = (pthread_t*) calloc((argc-1) * nthreads_l, sizeof(pthread_t));
     int output_head = 0;
     int next_thread = 0; // index into all_thread_args. points to the args for the next thread being created
@@ -178,16 +181,15 @@ int main(int argc, char** argv) {
         }
     }
     while (output_head < (argc - 1) * nthreads_l) {
-      printf("joining thread %d\n", output_head);
+      // printf("joining thread %d\n", output_head);
       void* void_retval;
       pthread_join(threads[output_head], &void_retval);
-      printf("building retval\n");
+      // printf("building retval\n");
       struct compthread_return* retval = (struct compthread_return*) void_retval; //TODO: maybe this should be a function?
-      printf("done\n");
-      printf("buffer: %s\n", retval->buffer);
-      printf("buffer entries: %d\n", retval->num_entries);
-      fwrite((void*) retval->buffer, 5, retval->num_entries, stdout);
-      printf("??\n");
+      // printf("done\n");
+      // printf("number of entries reported: %u\n", retval->num_entries);
+      fwrite((void*) retval->buffer, 1, retval->num_entries*5, stdout);
+
       free(retval->buffer); free(retval);
       output_head++;
     }
