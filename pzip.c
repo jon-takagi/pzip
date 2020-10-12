@@ -86,7 +86,7 @@ void* compressor_thread(void* arg) {
     uint32_t curr_char_count;
 
     // printf("beginning compresson loop\n");
-    while ((curr_char != EOF)) {
+    while ((curr_char != EOF) && ((args->worker_id == args->num_jobs-1) || (ftell(fp) <= args->work_orders_for_file[args->worker_id+1]))) {
         // ((args->worker_id != args->num_jobs-1) && (ftell(fp) > args->work_orders_for_file[args->worker_id+1])) ||
         // stop compression loop if:
         // if we are the last worker
@@ -105,7 +105,6 @@ void* compressor_thread(void* arg) {
         buffer[num_entries*5+1] = ((char*) &curr_char_count)[1];
         buffer[num_entries*5+2] = ((char*) &curr_char_count)[2];
         buffer[num_entries*5+3] = ((char*) &curr_char_count)[3];
-        
         buffer[num_entries*5+4] = curr_char;
         num_entries += 1;
         curr_char = new_char;
