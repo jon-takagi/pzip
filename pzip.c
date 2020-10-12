@@ -1,4 +1,5 @@
 #define _GNU_SOURCE
+#include <assert.h>
 #include <stdio.h>
 #include <sys/sysinfo.h>
 #include <pthread.h>
@@ -14,10 +15,13 @@
 //     output:  file size in bytes as an int
 long file_size(char *file_name){
     FILE *fp;
+    // printf("opening file %s\n", file_name);
     fp = fopen(file_name, "r");
+    // printf("seeking to end of file %s\n", file_name);
     fseek(fp, 0, SEEK_END);
-    long size = (long)ftell(fp);
+    long size = ftell(fp);
     fclose(fp);
+    // printf("closing file %s\n", file_name);
     return size;
 }
 
@@ -55,54 +59,61 @@ struct compthread_return {
 //TODO: add to README that we're assuming this runs on an SSD (parallel reads)
 
 void* compressor_thread(void* arg) {
-  struct compthread_args* args = (struct compthread_args*) arg;
-  FILE *fp;
-  const char* mode = "r";
-  // printf("Worker %d is opening file: %s\n", args->worker_id, arg_s);
-  fp = fopen(args->target_file_name, mode); //TODO: check if this worked!
+    struct compthread_args* args = (struct compthread_args*) arg;
+    FILE *fp;
+    const char* mode = "r";
+    // printf("Worker %d is opening file: %s\n", args->worker_id, args->target_file_name);
 
-  fseek(fp, args->work_orders_for_file[args->worker_id], SEEK_SET); //TODO: check if this worked!
+    fp = fopen(args->target_file_name, mode);
+    assert(fp != NULL);
 
+    int rc = fseek(fp, args->work_orders_for_file[args->worker_id], SEEK_SET);
+    assert(rc == 0);
 
-  char curr_char = fgetc(fp);
-  char new_char;
+    char curr_char = (char) fgetc(fp);
+    char new_char;
 
-  if (args->worker_id != 0) { // do the scan-forward thing
-    for (new_char = fgetc(fp); new_char == curr_char; new_char = fgetc(fp));
-    curr_char = new_char;
-  }
-
-  size_t buffer_size = 5;
-  unsigned num_entries = 0;
-  char* buffer = (char*) calloc(buffer_size, sizeof(char));
-
-  uint32_t curr_char_count;
-
-  while(1) {
-    if (((args->worker_id != args->num_jobs-1) && (ftell(fp) > args->work_orders_for_file[args->worker_id+1])) || (curr_char == EOF)) {
-      break;
+    if (args->worker_id != 0) { // do the scan-forward thing
+      printf("Scanning forward to the end of the block\n");
+      for (new_char = fgetc(fp); new_char == curr_char; new_char = fgetc(fp));
+      curr_char = new_char;
     }
-    for (curr_char_count = 1; (new_char = fgetc(fp)) == curr_char; curr_char_count++);
 
-    // if the buffer is too small, expand it
-    if (buffer_size <= num_entries * 5) {
-      buffer_size = buffer_size * 2;
-      buffer = (char*) realloc(buffer, buffer_size);
+    size_t buffer_size = 5;
+    unsigned num_entries = 0;
+    char* buffer = (char*) calloc(buffer_size, sizeof(char));
+
+    uint32_t curr_char_count;
+
+    printf("beginning compresson loop\n");
+    while ((curr_char == EOF)) {
+        // ((args->worker_id != args->num_jobs-1) && (ftell(fp) > args->work_orders_for_file[args->worker_id+1])) || 
+        // stop compression loop if:
+        // if we are the last worker
+            // we hit an EOF
+        // if we are NOT the last worker
+            // we have entered the block where the next guy would start
+        for (curr_char_count = 1; (new_char = fgetc(fp)) == curr_char; curr_char_count++);
+
+        // if the buffer is too small, expand it
+        if (buffer_size <= num_entries * 5) {
+            buffer_size = buffer_size * 2;
+            buffer = (char*) realloc(buffer, buffer_size);
+        }
+        buffer[num_entries*5]   = ((char*) &curr_char_count)[0];
+        buffer[num_entries*5+1] = ((char*) &curr_char_count)[1];
+        buffer[num_entries*5+2] = ((char*) &curr_char_count)[2];
+        buffer[num_entries*5+3] = ((char*) &curr_char_count)[3];
+        buffer[num_entries*5+4] = curr_char;
+        num_entries += 1;
     }
-    buffer[num_entries*5]   = ((char*) &curr_char_count)[0];
-    buffer[num_entries*5+1] = ((char*) &curr_char_count)[1];
-    buffer[num_entries*5+2] = ((char*) &curr_char_count)[2];
-    buffer[num_entries*5+3] = ((char*) &curr_char_count)[3];
-    buffer[num_entries*5+4] = curr_char;
-    num_entries += 1;
-  }
-  fclose(fp);
+    fclose(fp);
 
-  struct compthread_return* rvals = calloc(1, sizeof(struct compthread_return));
-  rvals->num_entries = num_entries; rvals->buffer = buffer;
+    struct compthread_return* rvals = calloc(1, sizeof(struct compthread_return));
+    rvals->num_entries = num_entries; rvals->buffer = buffer;
 
-  sem_post(args->completion_indicator);
-  return (void*) rvals;
+    sem_post(args->completion_indicator);
+    return (void*) rvals;
 }
 /*
 // printing this should be
@@ -133,7 +144,8 @@ int main(int argc, char** argv) {
     sem_init(&available_threads, 0, (unsigned int) nthreads_l);
 
     struct compthread_args* all_thread_args = (struct compthread_args*) calloc((argc-1)*nthreads_l, sizeof(struct compthread_args));
-    for(int j = 1; j < argc+1; j++) {
+    // printf("created args array\n");
+    for(int j = 1; j < argc; j++) {
         long size_of_file = file_size(argv[j]);
         long* work_orders = calloc(nthreads_l, sizeof(long));
         long work = 0;
@@ -145,31 +157,37 @@ int main(int argc, char** argv) {
           all_thread_args[(j-1) * nthreads_l + i].worker_id = i;
           all_thread_args[(j-1) * nthreads_l + i].work_orders_for_file = work_orders;
           all_thread_args[(j-1) * nthreads_l + i].num_jobs = (int) nthreads_l;
-          all_thread_args[(j-1) * nthreads_l + i].target_file_name = argv[j-1];
+          all_thread_args[(j-1) * nthreads_l + i].target_file_name = argv[j];
           all_thread_args[(j-1) * nthreads_l + i].completion_indicator = &available_threads;
         }
     }
-
+    printf("initialized args\n");
     pthread_t* threads = (pthread_t*) calloc((argc-1) * nthreads_l, sizeof(pthread_t));
     int output_head = 0;
     int next_thread = 0; // index into all_thread_args. points to the args for the next thread being created
     while (next_thread < (argc-1) * nthreads_l) {
-      sem_wait(&available_threads);
-      pthread_create(&threads[next_thread], NULL, compressor_thread, (void*) &all_thread_args[next_thread]);
-      next_thread++;
-      void* void_retval;
-      if (pthread_tryjoin_np(threads[output_head], &void_retval) == 0) {
-        struct compthread_return* retval = (struct compthread_return*) void_retval;
-        fwrite((void*) retval->buffer, 5, retval->num_entries, stdout);
-        free(retval->buffer); free(retval);
-        output_head++;
-      }
+        sem_wait(&available_threads);
+        pthread_create(&threads[next_thread], NULL, compressor_thread, (void*) &all_thread_args[next_thread]);
+        next_thread++;
+        void* void_retval;
+        if (pthread_tryjoin_np(threads[output_head], &void_retval) == 0) {
+            struct compthread_return* retval = (struct compthread_return*) void_retval;
+            fwrite((void*) retval->buffer, 5, retval->num_entries, stdout);
+            free(retval->buffer); free(retval);
+            output_head++;
+        }
     }
     while (output_head < (argc - 1) * nthreads_l) {
+      printf("joining thread %d\n", output_head);
       void* void_retval;
       pthread_join(threads[output_head], &void_retval);
+      printf("building retval\n");
       struct compthread_return* retval = (struct compthread_return*) void_retval; //TODO: maybe this should be a function?
+      printf("done\n");
+      printf("buffer: %s\n", retval->buffer);
+      printf("buffer entries: %d\n", retval->num_entries);
       fwrite((void*) retval->buffer, 5, retval->num_entries, stdout);
+      printf("??\n");
       free(retval->buffer); free(retval);
       output_head++;
     }
