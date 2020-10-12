@@ -1,9 +1,12 @@
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <sys/sysinfo.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <semaphore.h>
+#include <pthread.h>
+#include <stdint.h>
 
 
 // function:    file_size
@@ -52,10 +55,10 @@ struct compthread_return {
 //TODO: add to README that we're assuming this runs on an SSD (parallel reads)
 
 void* compressor_thread(void* arg) {
-  struct compthread_args* args = (compthread_arg*) arg;
+  struct compthread_args* args = (struct compthread_args*) arg;
   FILE *fp;
   const char* mode = "r";
-  printf("Worker %d is opening file: %s\n", args->worker_id, arg_s);
+  // printf("Worker %d is opening file: %s\n", args->worker_id, arg_s);
   fp = fopen(args->target_file_name, mode); //TODO: check if this worked!
 
   fseek(fp, args->work_orders_for_file[args->worker_id], SEEK_SET); //TODO: check if this worked!
@@ -73,19 +76,18 @@ void* compressor_thread(void* arg) {
   unsigned num_entries = 0;
   char* buffer = (char*) calloc(buffer_size, sizeof(char));
 
-  uint32 curr_char_count;
+  uint32_t curr_char_count;
 
-  while(true) {
-    if ((args->worker_id != args->num_jobs-1) && (ftell(fp) > args->work_orders[args->worker_id+1])
-        || (curr_char == EOF)) {
+  while(1) {
+    if (((args->worker_id != args->num_jobs-1) && (ftell(fp) > args->work_orders_for_file[args->worker_id+1])) || (curr_char == EOF)) {
       break;
     }
-    for (curr_char_count = 1; (new_char = fgetc(fp)) == curr_char; count++);
+    for (curr_char_count = 1; (new_char = fgetc(fp)) == curr_char; curr_char_count++);
 
     // if the buffer is too small, expand it
     if (buffer_size <= num_entries * 5) {
       buffer_size = buffer_size * 2;
-      buffer = (char*) realloc(buffer, buffer_size)
+      buffer = (char*) realloc(buffer, buffer_size);
     }
     buffer[num_entries*5]   = ((char*) &curr_char_count)[0];
     buffer[num_entries*5+1] = ((char*) &curr_char_count)[1];
@@ -119,39 +121,39 @@ int main(int argc, char** argv) {
     // int NUM_CORES = get_nprocs_conf();
     // printf("This system has %d processors configured and %d processors available.\n", NUM_CORES, get_nprocs());
     char *nthreads_s = getenv("NTHREADS");
-    long threads;
+    long nthreads_l;
     if(nthreads_s == NULL) {
-        threads = 1;
+        nthreads_l = 1;
     } else {
-        threads = atoi(nthreads_s);
+        nthreads_l = atoi(nthreads_s);
     }
-    printf("NTHREADS: %ld\n", threads);
+    printf("NTHREADS: %ld\n", nthreads_l);
 
     sem_t available_threads;
-    sem_init(&available_threads, 0, (unsigned int) threads);
+    sem_init(&available_threads, 0, (unsigned int) nthreads_l);
 
-    struct compthread_args* all_thread_args = (struct compthread_args*) calloc((argc-1)*threads, sizeof(struct compthread_args));
+    struct compthread_args* all_thread_args = (struct compthread_args*) calloc((argc-1)*nthreads_l, sizeof(struct compthread_args));
     for(int j = 1; j < argc+1; j++) {
         long size_of_file = file_size(argv[j]);
-        long* work_orders = calloc(nthreads, sizeof(long));
+        long* work_orders = calloc(nthreads_l, sizeof(long));
         long work = 0;
-        for (int i = 0; i < (int) threads; i++) {
+        for (int i = 0; i < (int) nthreads_l; i++) {
           work_orders[i] = work;
-          work = work + size_of_file / threads;
+          work = work + size_of_file / nthreads_l;
         }
-        for (int i = 0; i < nthreads; i++) {
-          all_thread_args[(j-1) * nthreads + i].worker_id = i;
-          all_thread_args[(j-1) * nthreads + i].work_orders_for_file = work_orders;
-          all_thread_args[(j-1) * nthreads + i].num_jobs = (int) threads;
-          all_thread_args[(j-1) * nthreads + i].target_file_name = argv[j-1];
-          all_thread_args[(j-1) * ntrheads + i].completion_indicator = &available_threads;
+        for (int i = 0; i < nthreads_l; i++) {
+          all_thread_args[(j-1) * nthreads_l + i].worker_id = i;
+          all_thread_args[(j-1) * nthreads_l + i].work_orders_for_file = work_orders;
+          all_thread_args[(j-1) * nthreads_l + i].num_jobs = (int) nthreads_l;
+          all_thread_args[(j-1) * nthreads_l + i].target_file_name = argv[j-1];
+          all_thread_args[(j-1) * nthreads_l + i].completion_indicator = &available_threads;
         }
     }
 
-    pthread_t* threads = (pthread_t*) calloc((argc-1) * threads), sizeof(pthread_t));
+    pthread_t* threads = (pthread_t*) calloc((argc-1) * nthreads_l, sizeof(pthread_t));
     int output_head = 0;
     int next_thread = 0; // index into all_thread_args. points to the args for the next thread being created
-    while (next_thread < (argc-1) * threads) {
+    while (next_thread < (argc-1) * nthreads_l) {
       sem_wait(&available_threads);
       pthread_create(&threads[next_thread], NULL, compressor_thread, (void*) &all_thread_args[next_thread]);
       next_thread++;
@@ -163,7 +165,7 @@ int main(int argc, char** argv) {
         output_head++;
       }
     }
-    while (output_head < (argc - 1) * threads) {
+    while (output_head < (argc - 1) * nthreads_l) {
       void* void_retval;
       pthread_join(threads[output_head], &void_retval);
       struct compthread_return* retval = (struct compthread_return*) void_retval; //TODO: maybe this should be a function?
@@ -173,8 +175,9 @@ int main(int argc, char** argv) {
     }
     free(threads);
     for(int j = 1; j < argc; j++) {
-      free(all_thread_args[(j-1) * threads]->work_orders_for_file);
+      free(all_thread_args[(j-1) * nthreads_l].work_orders_for_file);
     }
     free(all_thread_args);
+    sem_destroy(&available_threads);
     return 0;
 }
